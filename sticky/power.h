@@ -18,6 +18,22 @@ inline bool deep_sleep_mode(int m) { return m == POWER_SLEEP_TAP || m == POWER_S
 // Charging: the fuel gauge reports a positive average current while charging.
 inline bool is_charging(float average_ma) { return average_ma == average_ma && average_ma > 5.0f; }
 
+// Why the Sticky last woke up from deep sleep or power-off (kept in RTC memory, shown in HA).
+enum WakeReason : uint8_t { WAKE_UNKNOWN = 0, WAKE_POWER_ON = 1, WAKE_TOUCH = 2, WAKE_KEY = 3 };
+inline const char *wake_reason_label(int r) {
+  return r == WAKE_TOUCH ? "Screen tap" : r == WAKE_KEY ? "Grey key" : r == WAKE_POWER_ON ? "Power on / reset" : "Unknown";
+}
+
+// Status for Home Assistant. wifi_off: the radio is about to go (or is) off, so this is the
+// last state HA sees until the next wake; HA keeps it because the device has deep sleep.
+inline const char *device_status(bool controls, bool maintenance, bool watching, bool charging, bool wifi_off, int mode) {
+  if (maintenance) return "Update mode";
+  if (controls) return "In use";
+  if (watching) return "Showing hob";
+  if (wifi_off) return charging ? "Standby, charging" : deep_sleep_mode(mode) ? "Asleep" : "Standby";
+  return charging ? "Charging" : "Awake";
+}
+
 // Guard against a touch line that keeps waking the device (touch controller unpowered,
 // wrong idle level, interference). A touch wake less than 3 s after going to sleep counts
 // as suspicious; three in a row switch touch wake off.

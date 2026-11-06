@@ -8,6 +8,9 @@ RTC_DATA_ATTR uint32_t last_time_sync=0;
 // Survive deep sleep: when we went to sleep (RTC clock seconds) and the spurious-wake guard.
 RTC_DATA_ATTR uint32_t slept_at=0;
 RTC_DATA_ATTR WakeGuard wake_guard;
+// Last real wake (tap, grey key, power on) for HA; clock-tick timer wakes do not count.
+RTC_DATA_ATTR uint32_t last_wake=0;
+RTC_DATA_ATTR uint8_t last_wake_reason=0;
 static bool charging=false;
 constexpr int TOUCH_INT_PIN=21, TOUCH_RESET_PIN=41, GREY_KEY_PIN=4;
 inline void output(int pin,int level) { gpio_set_direction(gpio_num_t(pin),GPIO_MODE_OUTPUT); gpio_set_level(gpio_num_t(pin),level); }

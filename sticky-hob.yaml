@@ -47,6 +47,15 @@ esphome:
             id(sensor_bus).write(0x6A,accel,2);
             id(sensor_bus).write(0x6A,gyro,2);
             auto why=esp_sleep_get_wakeup_cause();
+            // Remember real wakes for Home Assistant; minute clock ticks (timer) do not count.
+            if (why!=ESP_SLEEP_WAKEUP_TIMER) {
+              auto now=id(rtc).now();
+              sticky::last_wake=now.is_valid()?uint32_t(now.timestamp):0;
+              sticky::last_wake_reason=why!=ESP_SLEEP_WAKEUP_EXT1 ? sticky::WAKE_POWER_ON :
+                                       sticky::woke_by_touch() ? sticky::WAKE_TOUCH : sticky::WAKE_KEY;
+            }
+            if (sticky::last_wake) id(last_wake).publish_state(sticky::last_wake);
+            id(wake_reason).publish_state(sticky::wake_reason_label(sticky::last_wake_reason));
             if (why==ESP_SLEEP_WAKEUP_EXT1) {
               if (sticky::woke_by_touch()) {
                 auto t=id(rtc).now();
@@ -228,6 +237,28 @@ sensor:
       - lambda: |-
           sticky::charging=sticky::is_charging(x);
           ESP_LOGI("sticky_power","Battery average current %.0f mA%s",x,sticky::charging?" (charging)":"");
+  # Last tap / grey-key / power-on wake, as a timestamp in HA.
+  - platform: template
+    id: last_wake
+    name: Last wake
+    device_class: timestamp
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+
+text_sensor:
+  # Awake / In use / Showing hob / Update mode / Asleep / Standby. Published just before Wi-Fi
+  # goes off; HA keeps the last value while the Sticky sleeps (deep-sleep device).
+  - platform: template
+    id: sticky_status
+    name: Status
+    icon: mdi:power-sleep
+    update_interval: never
+  - platform: template
+    id: wake_reason
+    name: Wake reason
+    entity_category: diagnostic
+    update_interval: never
 
 time:
   - platform: pcf8563
@@ -576,6 +607,18 @@ script:
           condition:
             lambda: return !sticky::ui.controls && !sticky::ui.maintenance(millis()) && !sticky::ui.watching;
           then:
+            - script.execute: wifi_off
+  # Tell HA what happens next (Asleep / Standby), give the API a moment to send it, then radio off.
+  - id: wifi_off
+    mode: single
+    then:
+      - lambda: |-
+          id(sticky_status).publish_state(sticky::device_status(false,false,false,sticky::charging,true,id(power_mode)));
+      - delay: 1s
+      - if:
+          condition:
+            lambda: return !sticky::ui.controls && !sticky::ui.maintenance(millis()) && !sticky::ui.watching && !id(sync_clock).is_running();
+          then:
             - wifi.disable:
   - id: go_back
     mode: single
@@ -598,7 +641,7 @@ script:
           condition:
             lambda: return !sticky::ui.maintenance(millis()) && !sticky::ui.watching;
           then:
-            - wifi.disable:
+            - script.execute: wifi_off
   - id: send_command
     mode: single
     parameters:
@@ -784,8 +827,15 @@ interval:
           if(!s.controls && s.watching) {
             if(fresh && !s.active()) {
               s.watching=false; s.dirty=true;
-              if(!s.maintenance(millis()) && !id(sync_clock).is_running()) id(wifi_link).disable();
+              if(!s.maintenance(millis()) && !id(sync_clock).is_running()) id(wifi_off).execute();
             }
+          }
+          // Home Assistant status: publish on change (not while wifi_off is announcing sleep).
+          static std::string ha_status;
+          if(!id(wifi_off).is_running()) {
+            std::string now_status=sticky::device_status(s.controls,s.maintenance(millis()),s.watching,sticky::charging,
+                                                         id(wifi_link).is_disabled(),id(power_mode));
+            if(now_status!=ha_status) { ha_status=now_status; id(sticky_status).publish_state(ha_status); }
           }
           static std::string glance;
           if(!s.controls) { auto g=sticky::glance_key(s,millis()); if(g!=glance) {glance=g; s.dirty=true;} }
@@ -807,7 +857,7 @@ interval:
             lambda: |-
               // Deep sleep on battery only; while charging the Sticky simply stays awake.
               return sticky::deep_sleep_mode(id(power_mode)) && !sticky::charging && !sticky::ui.watching && !sticky::ui.timer_running && !id(timer_alarm).is_running() && millis()>4000 && !sticky::ui.controls && !sticky::ui.dirty &&
-                !sticky::ui.maintenance(millis()) && !id(sync_clock).is_running() &&
+                !sticky::ui.maintenance(millis()) && !id(sync_clock).is_running() && !id(wifi_off).is_running() &&
                 id(screen).is_idle() && !id(ok_button).state;
           then:
             - lambda: |-
