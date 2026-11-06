@@ -18,6 +18,8 @@ inline bool zone_contains(int z,int x,int y) {
  return z<2 ? rounded_contains(left_zone,40,x,y) && zone_button(z).contains(x,y)
             : rounded_contains(zone_button(z),36,x,y);
 }
+// Standby glance (hob symbol + text under the clock): tapping it opens the cooktop page.
+constexpr Rect glance_area{280,352,500,124};
 constexpr Rect feature_button(int i){return {292+i*76,320,64,64};}
 constexpr Rect menu_button(int i){return {40+(i%3)*250,80+(i/3)*190,220,160};}
 constexpr Rect level_button(int i){return {15+i*70,392,70,80};}

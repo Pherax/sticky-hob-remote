@@ -30,6 +30,7 @@ esphome:
     - sticky/hardware.h
     - sticky/menu.h
     - sticky/push.h
+    - sticky/power.h
   on_boot:
     - priority: 1100
       then:
@@ -38,6 +39,7 @@ esphome:
       then:
         - pcf8563.read_time:
         - component.update: battery
+        - component.update: battery_current
         - lambda: |-
             sticky::load_connection("${hob_url}");
             // Put the unused IMU accelerometer and gyroscope in power-down mode.
@@ -46,6 +48,17 @@ esphome:
             id(sensor_bus).write(0x6A,gyro,2);
             auto why=esp_sleep_get_wakeup_cause();
             if (why==ESP_SLEEP_WAKEUP_EXT1) {
+              if (sticky::woke_by_touch()) {
+                auto t=id(rtc).now();
+                uint32_t slept=(t.is_valid() && sticky::slept_at) ? uint32_t(t.timestamp)-sticky::slept_at : 3600;
+                ESP_LOGI("sticky_power","Woken by touch after %u s",unsigned(slept));
+                if (sticky::wake_guard.touch_wake(slept)) {
+                  id(power_mode)=sticky::POWER_SLEEP_BUTTON;
+                  ESP_LOGW("sticky_power","Touch line keeps waking the device; touch wake switched off");
+                }
+              } else {
+                sticky::wake_guard.other_wake();
+              }
               sticky::ui.open(millis());
               id(open_controls).execute();
             } else if (why!=ESP_SLEEP_WAKEUP_TIMER || !id(rtc).now().is_valid() ||
@@ -56,7 +69,7 @@ esphome:
   on_shutdown:
     priority: -100
     then:
-      - lambda: sticky::hardware_sleep();
+      - lambda: sticky::hardware_sleep(id(power_mode)==sticky::POWER_SLEEP_TAP);
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -113,10 +126,11 @@ mdns:
 json:
 
 globals:
-  - id: economy_sleep
-    type: bool
+  # 0 always awake, 1 deep sleep with tap or grey-key wake, 2 deep sleep with grey-key wake.
+  - id: power_mode
+    type: int
     restore_value: true
-    initial_value: 'false'
+    initial_value: '1'
 
 output:
   - platform: ledc
@@ -198,6 +212,22 @@ sensor:
       if (id(sensor_bus).write_readv(0x55,&reg,1,raw,2)!=esphome::i2c::ERROR_OK) return NAN;
       unsigned value=raw[0] | (raw[1]<<8);
       return value<=100 ? float(value) : NAN;
+  # Fuel gauge average current (mA, positive = charging). Shows whether sleep works.
+  - platform: template
+    id: battery_current
+    name: Battery current
+    unit_of_measurement: mA
+    device_class: current
+    accuracy_decimals: 0
+    update_interval: 60s
+    lambda: |-
+      uint8_t reg=0x14, raw[2]={};
+      if (id(sensor_bus).write_readv(0x55,&reg,1,raw,2)!=esphome::i2c::ERROR_OK) return NAN;
+      return float(int16_t(raw[0] | (raw[1]<<8)));
+    on_value:
+      - lambda: |-
+          sticky::charging=sticky::is_charging(x);
+          ESP_LOGI("sticky_power","Battery average current %.0f mA%s",x,sticky::charging?" (charging)":"");
 
 time:
   - platform: pcf8563
@@ -288,16 +318,16 @@ display:
           it.strftime(400,185,id(clock_font),COLOR_OFF,TextAlign::CENTER,"%H:%M",now);
           it.strftime(400,290,id(medium),COLOR_OFF,TextAlign::CENTER,"%A  %d %B",now);
         } else it.print(400,195,id(medium),COLOR_OFF,TextAlign::CENTER,"Clock needs network time");
-        if(id(economy_sleep) && !s.watching) it.print(400,375,id(medium),COLOR_OFF,TextAlign::CENTER,"Press the grey button");
+        if(!s.watching && id(power_mode)==sticky::POWER_SLEEP_BUTTON) it.print(400,375,id(medium),COLOR_OFF,TextAlign::CENTER,"Press the grey button");
         sticky::draw_glance(it,id(small),id(medium),millis());
-        if(${clock_step_minutes}>1) it.printf(400,420,id(small),COLOR_OFF,TextAlign::CENTER,"Clock updates every %d minutes",${clock_step_minutes});
-        if(s.timer_running) it.printf(400,340,id(small),COLOR_OFF,TextAlign::CENTER,"Timer: %u min",(s.remaining(millis())+59)/60);
+        if(${clock_step_minutes}>1 && !s.watching) it.printf(400,420,id(small),COLOR_OFF,TextAlign::CENTER,"Clock updates every %d minutes",${clock_step_minutes});
+        if(s.timer_running) it.printf(400,340,id(small),COLOR_OFF,TextAlign::CENTER,"Timer: %u min",unsigned((s.remaining(millis())+59)/60));
         if(s.maintenance(millis())) it.print(20,20,id(small),COLOR_OFF,"UPDATE MODE: Wi-Fi on");
 
         return;
       }
       if(s.page!=2) {
-        sticky::draw_page(it,id(small),id(medium),id(large),id(clock_font),id(mdi_menu),id(mdi_small),millis(),id(economy_sleep),id(battery).state);
+        sticky::draw_page(it,id(small),id(medium),id(large),id(clock_font),id(mdi_menu),id(mdi_small),millis(),id(power_mode),id(battery).state);
         return;
       }
       sticky::draw_hob(it,id(zone_font),id(large),id(medium),id(small),id(hob_icons),id(hob_status_icons),millis());
@@ -318,7 +348,13 @@ touchscreen:
           // Ignore touches while pixels are changing; first wake touch never sends.
           if(sticky::ui.dirty || !id(screen).is_idle()) return;
           auto &s=sticky::ui;
-          if(!s.controls) { id(open_controls).execute(); return; }
+          if(!s.controls) {
+            // A tap on the standby hob glance goes straight to the cooktop page.
+            const bool to_hob=s.watching && sticky::glance_area.contains(touch.x,touch.y);
+            id(open_controls).execute();
+            if(to_hob && s.controls) s.navigate(2,millis());
+            return;
+          }
           s.activity=millis();
           const int x=touch.x,y=touch.y;
           if(s.page!=2) {
@@ -350,7 +386,7 @@ touchscreen:
             }
             if(s.page==7) {
               if(sticky::setting_button(0).contains(x,y)) {s.navigate(8,millis());id(wifi_link).enable();sticky::connection.message="Detect a hob or enter its IP.";}
-              if(sticky::setting_button(1).contains(x,y)) {id(economy_sleep)=!id(economy_sleep);s.dirty=true;}
+              if(sticky::setting_button(1).contains(x,y)) {id(power_mode)=sticky::next_power_mode(id(power_mode));s.dirty=true;}
               if(sticky::setting_button(2).contains(x,y)) id(sync_clock).execute();
               if(sticky::setting_button(3).contains(x,y)) {s.maintenance_until=millis()+600000;s.dirty=true;id(wifi_link).enable();}
               return;
@@ -769,10 +805,15 @@ interval:
       - if:
           condition:
             lambda: |-
-              return id(economy_sleep) && !sticky::ui.watching && !sticky::ui.timer_running && !id(timer_alarm).is_running() && millis()>4000 && !sticky::ui.controls && !sticky::ui.dirty &&
+              // Deep sleep on battery only; while charging the Sticky simply stays awake.
+              return sticky::deep_sleep_mode(id(power_mode)) && !sticky::charging && !sticky::ui.watching && !sticky::ui.timer_running && !id(timer_alarm).is_running() && millis()>4000 && !sticky::ui.controls && !sticky::ui.dirty &&
                 !sticky::ui.maintenance(millis()) && !id(sync_clock).is_running() &&
                 id(screen).is_idle() && !id(ok_button).state;
           then:
+            - lambda: |-
+                id(sleep_ctrl)->set_ext1_wakeup({sticky::wake_mask(id(power_mode)), ESP_EXT1_WAKEUP_ANY_LOW});
+                auto t=id(rtc).now();
+                sticky::slept_at=t.is_valid()?uint32_t(t.timestamp):0;
             - deep_sleep.enter:
                 id: sleep_ctrl
                 sleep_duration: !lambda |-

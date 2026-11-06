@@ -37,9 +37,11 @@ standby clock with live hob status.*
   refresh only on page changes and every 30 updates.
 * **Push link:** the hob sends its state over encrypted UDP about once a second
   and on every change. HTTP polling is only a fallback.
+* **Battery saver:** deep sleep in standby, woken by a tap on the screen or the
+  grey key; stays awake while charging. A *Battery current* sensor shows what
+  it draws. The always-awake mode lasts about a day on the 750 mAh battery.
 * **Also:** kitchen timer (a reminder, not a hob shut-off), coffee, lights and
-  hood via Home Assistant, clock with RTC and SNTP, hob discovery over mDNS,
-  optional battery-saver deep sleep.
+  hood via Home Assistant, clock with RTC and SNTP, hob discovery over mDNS.
 * **Reserved:** multi-zone, pause and bridge buttons are drawn but not wired
   yet; their bus commands have not been captured.
 
@@ -81,7 +83,7 @@ At the top of `sticky-hob.yaml`:
 |---|---|
 | `hob_name` | ESPHome name of the hob; push data is accepted only from this device |
 | `hob_url` | Initial fallback address; Settings → Hob connection saves your choice |
-| `timezone`, `clock_step_minutes`, `control_idle_seconds` | Clock and standby behaviour |
+| `timezone`, `clock_step_minutes`, `control_idle_seconds` | Clock and standby behaviour. In deep sleep the Sticky wakes every clock step to redraw the time: `5` saves noticeably more battery than `1`. |
 | `coffee_*`, `light_*`, `hood_*` | Home Assistant entities for the appliance pages |
 
 For the appliance pages, add the Sticky in Home Assistant (Settings → Devices

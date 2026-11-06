@@ -24,6 +24,6 @@ int main() {
  }
  Display d; sticky::ui.open(100);
  puts("<svg xmlns='http://www.w3.org/2000/svg' width='800' height='480' viewBox='0 0 800 480'><rect width='800' height='480' fill='white'/>");
- sticky::draw_page(d,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,100,false,80);
+ sticky::draw_page(d,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,100,1,80);
  puts("</svg>");
 }

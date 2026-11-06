@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.14.1 (6 November 2026) — glance shortcut
+
+* Tap the hob glance on the standby screen to open the cooktop page directly. A tap anywhere else still opens
+  the home page, and the grey key keeps its "back" role.
+* The "Clock updates every … minutes" line is hidden while the hob glance is shown, so the two do not overlap.
+* Timer label uses an explicit `unsigned` cast (compiler format warning).
+
+## v0.14 (6 November 2026) — battery life
+
+The old default standby kept the ESP32-S3 awake (about 30 mA): a 750 mAh battery lasted about a day.
+
+* **Three standby modes**, cycled in Settings:
+  * *Battery saver: tap or button wake* (new default): deep sleep; a tap on the screen or the grey key wakes it.
+  * *Battery saver: button wake only*: deep sleep, touch controller held in reset; lowest consumption.
+  * *Always awake (about 1 day)*: the previous behaviour.
+* Tap-to-wake keeps the touch controller powered in deep sleep and uses its interrupt line (GPIO21) as a second
+  wake source next to the grey key. If that line keeps waking the Sticky (three touch wakes less than 3 s after
+  going to sleep), touch wake switches itself off and the mode becomes *button wake only*.
+* **While charging the Sticky stays awake**, detected from the fuel gauge's average current.
+* New sensor **Battery current** (mA, positive = charging) in Home Assistant and in the log (`sticky_power`).
+* Deep sleep still waits while the hob is on or hot (standby glance), while the timer runs and in update mode.
+
+Not yet verified on hardware: whether the touch controller wakes the ESP from deep sleep on this board, and the
+actual standby current. Check after flashing: put the Sticky to sleep, tap the screen, and look for
+`Woken by touch after N s` in the log. Note the battery percentage over a day.
+
+Existing devices start in the new default mode (the setting moved to a new stored value).
+
 ## v0.13.1 (6 November 2026)
 
 * Link logging: the log shows `Push from hob OK` every 10 s, or `HTTP snapshot poll` when the push is quiet (logger level INFO).

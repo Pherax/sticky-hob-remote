@@ -27,4 +27,7 @@ int main(){
  assert(!zone_contains(2,282,112));assert(zone_contains(2,400,112));
  for(int n=0;n<11;n++){auto r=level_button(n);assert(level_at(r.x,r.y)==n);assert(level_at(r.x+r.w-1,r.y+r.h-1)==n);assert(level_at(r.x+r.w,r.y)==(n<10?n+1:-1));}
  for(int i=0;i<6;i++){auto r=menu_button(i);assert(menu_at(r.mx(),r.my())==i);}
+ // Glance tap target covers the drawn hob symbol (300..460 x 372..458) and its text, inside the screen.
+ assert(sticky::glance_area.contains(300,372) && sticky::glance_area.contains(459,457) && sticky::glance_area.contains(700,415));
+ assert(sticky::glance_area.x+sticky::glance_area.w<=800 && sticky::glance_area.y+sticky::glance_area.h<=480);
 }

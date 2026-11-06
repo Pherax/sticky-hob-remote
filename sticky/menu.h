@@ -1,6 +1,7 @@
 #pragma once
 #include <cmath>
 #include "ui_state.h"
+#include "power.h"
 #include "connection_state.h"
 #include "esphome/components/display/display.h"
 namespace sticky {
@@ -19,7 +20,7 @@ template<class D> void icon(D &d,esphome::display::BaseFont *font,int type,int x
  d.print(x,y,font,esphome::display::COLOR_OFF,esphome::display::TextAlign::CENTER,menu_glyphs[type]);
 }
 template<class D> void draw_page(D &d, esphome::display::BaseFont *small, esphome::display::BaseFont *medium,
- esphome::display::BaseFont *large, esphome::display::BaseFont *clock_font,esphome::display::BaseFont *mdi,esphome::display::BaseFont *mdi_small,uint32_t now,bool economy,float battery) {
+ esphome::display::BaseFont *large, esphome::display::BaseFont *clock_font,esphome::display::BaseFont *mdi,esphome::display::BaseFont *mdi_small,uint32_t now,int power_mode,float battery) {
  auto &s=ui;
  // Borderless: icons and text carry the layout; touch rectangles are unchanged.
  d.print(back_button.mx(),back_button.my(),mdi_small,esphome::display::COLOR_OFF,esphome::display::TextAlign::CENTER,"\U000F004D");
@@ -43,7 +44,7 @@ template<class D> void draw_page(D &d, esphome::display::BaseFont *small, esphom
    for(int i=0;i<4;i++)outline(d,setting_button(i));
    d.print(48,110,medium,esphome::display::COLOR_OFF,"Hob connection  >");
    d.print(40,150,small,esphome::display::COLOR_OFF,short_address(connection.address).c_str());
-   d.print(40,220,medium,esphome::display::COLOR_OFF,economy?"Battery saver: button wake":"Touch standby: tap to open");
+   d.print(40,220,medium,esphome::display::COLOR_OFF,power_label(power_mode));
    d.print(40,310,medium,esphome::display::COLOR_OFF,"Sync clock");
    d.print(40,400,medium,esphome::display::COLOR_OFF,s.maintenance(now)?"Update mode active":"Enable updates (10 min)");
    return;
