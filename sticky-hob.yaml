@@ -1,0 +1,781 @@
+# reTerminal Sticky SKU 100056818. Separate wireless remote, NOT MACS master.
+substitutions:
+  hob_url: "http://induction.local" # Initial fallback only; Settings saves your selection.
+  hob_name: "induction" # ESPHome name of the hob: its encrypted state push is accepted only from this device.
+  control_idle_seconds: "120"
+  clock_step_minutes: "1" # 1 = live minute clock; 5/15 saves more battery, shows update time.
+  timezone: "Europe/Amsterdam"
+  # Home Assistant entities for the appliance pages (called through the HA API).
+  coffee_one_cup_script: "script.grind_coffee"
+  coffee_two_cups_script: "script.grind_coffee_for_two"
+  light_top: "light.kitchen_top"           # Lights page: toggled with light.toggle
+  light_bottom: "light.kitchen_bottom"
+  hood_light_button: "button.hood_light"   # Hood page buttons: pressed with button.press
+  hood_timer_button: "button.hood_power"
+  hood_off_button: "button.hood_mid"
+  hood_up_button: "button.hood_speed"
+  hood_down_button: "button.hood_speed_2"
+
+esphome:
+  name: sticky-hob
+  friendly_name: Sticky Hob
+  min_version: 2026.10.0
+  includes:
+    - sticky/hob_ui.h
+    - sticky/status_bar.h
+    - sticky/layout.h
+    - sticky/connection_state.h
+    - sticky/connection.h
+    - sticky/ui_state.h
+    - sticky/hardware.h
+    - sticky/menu.h
+    - sticky/push.h
+  on_boot:
+    - priority: 1100
+      then:
+        - lambda: sticky::hardware_boot();
+    - priority: -100
+      then:
+        - pcf8563.read_time:
+        - component.update: battery
+        - lambda: |-
+            sticky::load_connection("${hob_url}");
+            // Put the unused IMU accelerometer and gyroscope in power-down mode.
+            uint8_t accel[2]={0x10,0}, gyro[2]={0x11,0};
+            id(sensor_bus).write(0x6A,accel,2);
+            id(sensor_bus).write(0x6A,gyro,2);
+            auto why=esp_sleep_get_wakeup_cause();
+            if (why==ESP_SLEEP_WAKEUP_EXT1) {
+              sticky::ui.open(millis());
+              id(open_controls).execute();
+            } else if (why!=ESP_SLEEP_WAKEUP_TIMER || !id(rtc).now().is_valid() ||
+                       id(rtc).now().timestamp-sticky::last_time_sync>86400) {
+              id(sync_clock).execute();
+            }
+            sticky::ui.dirty=true;
+  on_shutdown:
+    priority: -100
+    then:
+      - lambda: sticky::hardware_sleep();
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: ESP32S3
+  flash_size: 32MB
+  cpu_frequency: 80MHz
+  framework:
+    type: esp-idf
+    advanced:
+      enable_idf_experimental_features: true
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+  hardware_uart: UART0
+  baud_rate: 0
+  level: INFO
+  logs:
+    # Shows whether hob state arrives by UDP push or by HTTP fallback.
+    sticky_link: INFO
+    sensor: WARN
+    text_sensor: WARN
+    binary_sensor: WARN
+    http_request: WARN
+    packet_transport: WARN
+    display: WARN
+
+wifi:
+  id: wifi_link
+  ssid: !secret iot_wifi_ssid
+  password: !secret iot_wifi_password
+  enable_on_boot: false
+  power_save_mode: LIGHT
+  reboot_timeout: 0s
+  on_disconnect:
+    - lambda: |-
+        sticky::ui.received=false; sticky::ui.clear_requests(); sticky::ui.dirty=true;
+
+api:
+  reboot_timeout: 0s
+  encryption:
+    key: !secret sticky_api_key
+
+ota:
+  - platform: esphome
+    password: !secret sticky_ota_password
+    on_begin:
+      - lambda: sticky::ui.maintenance_until=millis()+600000;
+
+mdns:
+
+json:
+
+globals:
+  - id: economy_sleep
+    type: bool
+    restore_value: true
+    initial_value: 'false'
+
+output:
+  - platform: ledc
+    pin: GPIO48
+    id: buzzer
+
+rtttl:
+  output: buzzer
+
+preferences:
+  flash_write_interval: 1min
+
+i2c:
+  - id: sensor_bus
+    scl: GPIO0
+    sda: GPIO1
+    scan: false
+  - id: touch_bus
+    scl: GPIO2
+    sda: GPIO3
+    scan: false
+
+spi:
+  clk_pin: GPIO13
+  mosi_pin: GPIO14
+
+switch:
+  - platform: gpio
+    id: touch_power
+    pin: GPIO42
+    internal: true
+    restore_mode: ALWAYS_ON
+    setup_priority: 1100
+
+sensor:
+  - platform: packet_transport
+    provider: ${hob_name}
+    remote_id: sticky_push_levels
+    id: push_levels
+    internal: true
+    on_value:
+      - lambda: sticky::push_value(0,x,millis());
+  - platform: packet_transport
+    provider: ${hob_name}
+    remote_id: sticky_push_flags
+    id: push_flags
+    internal: true
+    on_value:
+      - lambda: sticky::push_value(1,x,millis());
+  - platform: packet_transport
+    provider: ${hob_name}
+    remote_id: sticky_push_meta
+    id: push_meta
+    internal: true
+    on_value:
+      - lambda: sticky::push_value(2,x,millis());
+  - platform: packet_transport
+    provider: ${hob_name}
+    remote_id: sticky_push_tick
+    id: push_tick
+    internal: true
+    on_value:
+      - lambda: |-
+          sticky::push_value(3,x,millis());
+          static uint32_t last_log=0;
+          if(last_log==0 || millis()-last_log>10000) {
+            ESP_LOGI("sticky_link","Push from hob OK (tick %.0f)",x);
+            last_log=millis();
+          }
+  - platform: template
+    id: battery
+    name: Battery
+    unit_of_measurement: "%"
+    device_class: battery
+    accuracy_decimals: 0
+    update_interval: 60s
+    lambda: |-
+      uint8_t reg=0x2C, raw[2]={};
+      if (id(sensor_bus).write_readv(0x55,&reg,1,raw,2)!=esphome::i2c::ERROR_OK) return NAN;
+      unsigned value=raw[0] | (raw[1]<<8);
+      return value<=100 ? float(value) : NAN;
+
+time:
+  - platform: pcf8563
+    id: rtc
+    i2c_id: sensor_bus
+    address: 0x51
+    timezone: ${timezone}
+    update_interval: never
+  - platform: sntp
+    id: network_time
+    timezone: ${timezone}
+    on_time_sync:
+      - pcf8563.write_time:
+      - lambda: |-
+          sticky::last_time_sync=id(network_time).now().timestamp;
+          sticky::ui.dirty=true;
+
+# Encrypted state push from the hob (see hob/sticky-direct.yaml). Receive only.
+udp:
+  id: hob_udp
+
+packet_transport:
+  - platform: udp
+    id: hob_push
+    udp_id: hob_udp
+    providers:
+      - name: ${hob_name}
+        encryption:
+          key: !secret sticky_push_key
+
+http_request:
+  id: hob_http
+  timeout: 2s
+  follow_redirects: false
+
+
+font:
+  - file: sticky/fonts/materialdesignicons-webfont.ttf
+    id: hob_status_icons
+    size: 28
+    glyphs: ["\U000F02E5", "\U000F0238"]
+  - file: sticky/fonts/materialdesignicons-webfont.ttf
+    id: hob_icons
+    size: 48
+    glyphs: ["\U000F0425", "\U000F02E5", "\U000F0238"]
+  - file: sticky/fonts/materialdesignicons-webfont.ttf
+    id: mdi_menu
+    size: 96
+    glyphs: ["\U000F04DE", "\U000F0210", "\U000F06CA", "\U000F051B", "\U000F0336", "\U000F08BB"]
+  - file: sticky/fonts/materialdesignicons-webfont.ttf
+    id: mdi_small
+    size: 32
+    glyphs: ["\U000F004D", "\U000F05A9", "\U000F05AA", "\U000F0337", "\U000F0338"]
+  - file: sticky/fonts/DejaVuSans.ttf
+    id: small
+    size: 18
+  - file: sticky/fonts/DejaVuSans.ttf
+    id: zone_font
+    size: 96
+    glyphs: "0123456789P?H"
+  - file: sticky/fonts/DejaVuSans.ttf
+    id: medium
+    size: 28
+  - file: sticky/fonts/DejaVuSans.ttf
+    id: large
+    size: 48
+  - file: sticky/fonts/DejaVuSans.ttf
+    id: clock_font
+    size: 140
+    glyphs: "0123456789:-"
+
+# No web server, Bluetooth, microphone, SD storage or continuous sensor polling.
+display:
+  - platform: epaper_spi
+    id: screen
+    # Black and white with partial refreshes: fast and without the full-screen flash.
+    # A full refresh clears ghosting every 30 updates and on every page change.
+    model: seeed-reterminal-sticky
+    update_interval: never
+    full_update_every: 30
+    lambda: |-
+      auto &s=sticky::ui;
+      auto now=id(rtc).now();
+      it.fill(COLOR_ON);
+      sticky::draw_status(it,id(mdi_small),id(small),id(wifi_link).is_connected(),id(battery).state,millis());
+      if(!s.controls) {
+        if(now.is_valid()) {
+          it.strftime(400,185,id(clock_font),COLOR_OFF,TextAlign::CENTER,"%H:%M",now);
+          it.strftime(400,290,id(medium),COLOR_OFF,TextAlign::CENTER,"%A  %d %B",now);
+        } else it.print(400,195,id(medium),COLOR_OFF,TextAlign::CENTER,"Clock needs network time");
+        if(id(economy_sleep) && !s.watching) it.print(400,375,id(medium),COLOR_OFF,TextAlign::CENTER,"Press the grey button");
+        sticky::draw_glance(it,id(small),id(medium),millis());
+        if(${clock_step_minutes}>1) it.printf(400,420,id(small),COLOR_OFF,TextAlign::CENTER,"Clock updates every %d minutes",${clock_step_minutes});
+        if(s.timer_running) it.printf(400,340,id(small),COLOR_OFF,TextAlign::CENTER,"Timer: %u min",(s.remaining(millis())+59)/60);
+        if(s.maintenance(millis())) it.print(20,20,id(small),COLOR_OFF,"UPDATE MODE: Wi-Fi on");
+
+        return;
+      }
+      if(s.page!=2) {
+        sticky::draw_page(it,id(small),id(medium),id(large),id(clock_font),id(mdi_menu),id(mdi_small),millis(),id(economy_sleep),id(battery).state);
+        return;
+      }
+      sticky::draw_hob(it,id(zone_font),id(large),id(medium),id(small),id(hob_icons),id(hob_status_icons),millis());
+
+touchscreen:
+  - platform: gt911
+    id: touch_panel
+    display: screen
+    i2c_id: touch_bus
+    address: 0x5D
+    interrupt_pin: GPIO21
+    reset_pin: GPIO41
+    # Seeed's GT911 mapping for the landscape 800x480 preset.
+    transform:
+      swap_xy: true
+    on_touch:
+      - lambda: |-
+          // Ignore touches while pixels are changing; first wake touch never sends.
+          if(sticky::ui.dirty || !id(screen).is_idle()) return;
+          auto &s=sticky::ui;
+          if(!s.controls) { id(open_controls).execute(); return; }
+          s.activity=millis();
+          const int x=touch.x,y=touch.y;
+          if(s.page!=2) {
+            if(sticky::connection.busy()) return;
+            if(sticky::back_button.contains(x,y)) { s.navigate(s.page==9?8:s.page==8?7:s.page==1?0:1,millis()); if(!s.controls) id(go_clock).execute(); return; }
+            if(s.page==1) { int item=sticky::menu_at(x,y); if(item>=0) {s.navigate(item+2,millis()); if(item==0) id(wifi_link).enable();} return; }
+            if(sticky::appliance_count(s.page)) {
+              int a=sticky::appliance_at(s.page,x,y);
+              if(a>=0) {
+                if(s.page==4) id(ha_action).execute("script.turn_on",a==0?"${coffee_one_cup_script}":"${coffee_two_cups_script}");
+                else if(s.page==6) {
+                  const char *entities[]={"${light_top}","${light_bottom}","${hood_light_button}"};
+                  id(ha_action).execute(a==2?"button.press":"light.toggle",entities[a]);
+                } else {
+                  const char *entities[]={"${hood_light_button}","${hood_timer_button}","${hood_off_button}","${hood_up_button}","${hood_down_button}"};
+                  id(ha_action).execute("button.press",entities[a]);
+                }
+              }
+              return;
+            }
+            if(s.page==5) {
+              if(sticky::timer_button(0).contains(x,y)||sticky::timer_button(1).contains(x,y)||sticky::timer_button(2).contains(x,y)) {
+                if(sticky::timer_button(0).contains(x,y) && !s.timer_running) s.timer_minutes=std::max(1,s.timer_minutes-1);
+                else if(sticky::timer_button(2).contains(x,y) && !s.timer_running) s.timer_minutes=std::min(180,s.timer_minutes+1);
+                else if(sticky::timer_button(1).contains(x,y)) {if(s.timer_running) {s.timer_running=false; s.timer_done=false;} else s.start_timer(millis());}
+                s.dirty=true;
+              }
+              return;
+            }
+            if(s.page==7) {
+              if(sticky::setting_button(0).contains(x,y)) {s.navigate(8,millis());id(wifi_link).enable();sticky::connection.message="Detect a hob or enter its IP.";}
+              if(sticky::setting_button(1).contains(x,y)) {id(economy_sleep)=!id(economy_sleep);s.dirty=true;}
+              if(sticky::setting_button(2).contains(x,y)) id(sync_clock).execute();
+              if(sticky::setting_button(3).contains(x,y)) {s.maintenance_until=millis()+600000;s.dirty=true;id(wifi_link).enable();}
+              return;
+            }
+            if(s.page==8) {
+              auto &c=sticky::connection;
+              if(sticky::connect_button(0).contains(x,y)||sticky::connect_button(1).contains(x,y)) {
+                if(sticky::connect_button(0).contains(x,y)) id(scan_hobs).execute();
+                else {c.input.clear();c.message="Port optional; default 80. Test saves if valid.";s.navigate(9,millis());}
+              } else if(y>=190 && y<410) {
+                int n=(y-190)/55;
+                if(n<int(c.found.size()) && sticky::result_button(n).contains(x,y)) {c.candidate=c.found[n];id(test_hob).execute();}
+              }
+              return;
+            }
+            if(s.page==9) {
+              auto &c=sticky::connection;int k=sticky::key_at(x,y);
+              if(k==12)c.input.clear();
+              else if(k==13 && !c.input.empty())c.input.pop_back();
+              else if(k==14) {
+                if(sticky::valid_ip(c.input)) {c.candidate="http://"+c.input;id(test_hob).execute();}
+                else c.message="Enter a valid IPv4 address and optional port.";
+              } else if(k>=0 && k<12 && c.input.size()<21)c.input+=sticky::keys[k];
+              s.dirty=true;return;
+            }
+            return;
+          }
+          if(sticky::power_button.contains(x,y)) {
+            if(s.on()) id(send_command).execute("off",0,0);
+            else {s.pending_on=true;s.on_req_at=millis();s.draft=-1;s.dirty=true;id(send_command).execute("on",s.selected,-1);}
+            return;
+          }
+          // Reserved feature icons: no protocol commands until implemented.
+          for(int i=0;i<3;i++)if(sticky::feature_button(i).contains(x,y))return;
+          int n=sticky::level_at(x,y);
+          if(n>=0) {s.request_level(n,millis());return;}
+          int z=sticky::zone_at(x,y); if(z>=0) s.select(z);
+
+binary_sensor:
+  - platform: gpio
+    id: ok_button
+    internal: true
+    pin:
+      number: GPIO4
+      inverted: true
+      mode: INPUT_PULLUP
+      allow_other_uses: true
+    filters:
+      - delayed_on_off: 30ms
+    # The grey key: wakes the Sticky, otherwise goes back one page.
+    on_click:
+      min_length: 40ms
+      max_length: 800ms
+      then:
+        - script.execute: go_back
+  - platform: gpio
+    id: up_button
+    internal: true
+    pin: {number: GPIO5, inverted: true, mode: INPUT_PULLUP}
+    filters:
+      - delayed_on_off: 30ms
+    on_multi_click:
+      # Short press on the cooktop page: selected zone one level up.
+      - timing:
+          - ON for at most 1s
+          - OFF for at least 20ms
+        then:
+          - lambda: |-
+              auto &s=sticky::ui;
+              if(s.controls && s.page==2) {s.activity=millis(); s.step_level(+1,millis());}
+      # Hold 3 s: update mode (Wi-Fi on for OTA).
+      - timing:
+          - ON for at least 3s
+        then:
+          - lambda: |-
+              sticky::ui.maintenance_until=millis()+600000;
+              sticky::ui.dirty=true;
+          - wifi.enable:
+  - platform: gpio
+    id: down_button
+    internal: true
+    pin: {number: GPIO6, inverted: true, mode: INPUT_PULLUP}
+    filters:
+      - delayed_on_off: 30ms
+    # Selected zone one level down.
+    on_click:
+      min_length: 30ms
+      max_length: 1s
+      then:
+        - lambda: |-
+            auto &s=sticky::ui;
+            if(s.controls && s.page==2) {s.activity=millis(); s.step_level(-1,millis());}
+
+deep_sleep:
+  id: sleep_ctrl
+  esp32_ext1_wakeup:
+    pins:
+      - number: GPIO4
+        mode: INPUT_PULLUP
+        allow_other_uses: true
+    mode: ANY_LOW
+
+script:
+  - id: ha_action
+    mode: single
+    parameters:
+      service_name: string
+      entity: string
+    then:
+      - if:
+          condition:
+            api.connected:
+              state_subscription_only: true
+          then:
+            - lambda: |-
+                sticky::ui.ha_notice="Sending to Home Assistant...";
+                sticky::ui.dirty=true;
+                ESP_LOGI("sticky_ha", "Calling %s for %s", service_name.c_str(), entity.c_str());
+            - homeassistant.action:
+                action: !lambda return service_name;
+                data:
+                  entity_id: !lambda return entity;
+                on_success:
+                  - lambda: |-
+                      sticky::ui.ha_notice="HA action completed";
+                      sticky::ui.dirty=true;
+                      ESP_LOGI("sticky_ha", "HA completed %s for %s", service_name.c_str(), entity.c_str());
+                on_error:
+                  - lambda: |-
+                      sticky::ui.ha_notice="HA action failed - check logs / permission";
+                      sticky::ui.dirty=true;
+                      ESP_LOGE("sticky_ha", "%s for %s: %s", service_name.c_str(), entity.c_str(), error.c_str());
+          else:
+            - lambda: |-
+                sticky::ui.ha_notice="HA not connected - wait, then tap again";
+                sticky::ui.dirty=true;
+                ESP_LOGW("sticky_ha", "Not sent: no state-subscribing HA API client for %s", entity.c_str());
+  - id: scan_hobs
+    mode: single
+    then:
+      - lambda: |-
+          sticky::connection.scanning=true;sticky::connection.message="Connecting to Wi-Fi...";sticky::ui.dirty=true;
+      - wifi.enable:
+      - wait_until:
+          condition: wifi.connected
+          timeout: 15s
+      - lambda: |-
+          if(!id(wifi_link).is_connected()) {
+            sticky::connection.scanning=false;sticky::connection.message="Wi-Fi unavailable.";sticky::ui.dirty=true;return;
+          }
+          sticky::discover_hobs();
+  - id: test_hob
+    mode: single
+    then:
+      - lambda: |-
+          sticky::connection.testing=true;sticky::connection.message="Checking hob...";
+          sticky::ui.draft=-1;sticky::ui.pending_on=false;sticky::ui.dirty=true;
+      - wifi.enable:
+      - wait_until:
+          condition: wifi.connected
+          timeout: 15s
+      - if:
+          condition: wifi.connected
+          then:
+            - script.execute: poll_hob
+          else:
+            - lambda: |-
+                sticky::connection.testing=false;sticky::connection.message="Wi-Fi unavailable. Nothing saved.";sticky::ui.dirty=true;
+  - id: timer_alarm
+    mode: restart
+    then:
+      - lambda: sticky::ui.navigate(5,millis());
+      - rtttl.play: "done:d=8,o=5,b=120:c,e,g,4c6"
+  - id: open_controls
+    mode: restart
+    then:
+      - script.stop: sync_clock
+      - lambda: |-
+          if(!sticky::connection.busy()) sticky::ui.open(millis());
+      - wifi.enable:
+  - id: sync_clock
+    mode: single
+    then:
+      - wifi.enable:
+      - delay: 45s
+      - if:
+          condition:
+            lambda: return !sticky::ui.controls && !sticky::ui.maintenance(millis()) && !sticky::ui.watching;
+          then:
+            - wifi.disable:
+  - id: go_back
+    mode: single
+    then:
+      - lambda: |-
+          auto &s=sticky::ui;
+          if(!s.controls) { id(open_controls).execute(); return; }
+          if(sticky::connection.busy()) return;
+          s.navigate(s.page==9?8:s.page==8?7:s.page==1?0:1,millis());
+          if(!s.controls) id(go_clock).execute();
+  - id: go_clock
+    mode: single
+    then:
+      - lambda: |-
+          auto &s=sticky::ui;
+          s.clock();
+          // Keep listening in standby while the hob was last seen on or hot.
+          s.watching=s.fresh(millis()) && s.active();
+      - if:
+          condition:
+            lambda: return !sticky::ui.maintenance(millis()) && !sticky::ui.watching;
+          then:
+            - wifi.disable:
+  - id: send_command
+    mode: single
+    parameters:
+      kind: string
+      zone: int
+      level: int
+    then:
+      - if:
+          condition:
+            lambda: |-
+              auto &s=sticky::ui;
+              return !sticky::connection.busy() && s.page==2 && id(wifi_link).is_connected() &&
+                (kind=="off" || (kind=="on" && s.pending_on && s.can_apply(millis())) ||
+                 (kind=="level" && zone>=0 && zone<5 && level>=0 && level<=10 &&
+                  zone==s.selected && level==s.draft && s.can_apply(millis())));
+          then:
+            - http_request.post:
+                url: !lambda |-
+                  const char *ids[]={"Bottom%20left","Top%20left","Middle","Bottom%20right","Top%20right"};
+                  std::string base=sticky::connection.address;
+                  if(kind=="off") return base+"/button/Hob%20off/press";
+                  if(kind=="on") return base+"/button/Hob%20on/press";
+                  return base+"/number/"+ids[zone]+"/set?value="+std::to_string(level);
+                on_response:
+                  - lambda: |-
+                      auto &s=sticky::ui;
+                      // Quiet on success: the outline stays until the hob reports the level.
+                      if(response->status_code!=200) {s.notice="Request rejected"; s.clear_requests();}
+                      else if(kind=="level" && s.draft==level) s.draft=-1;
+                      s.activity=millis(); s.dirty=true;
+                on_error:
+                  - lambda: |-
+                      sticky::ui.notice="Delivery unknown - check hob";
+                      sticky::ui.received=false; sticky::ui.clear_requests(); sticky::ui.dirty=true;
+            # Read back promptly when the push link is quiet; HTTP delivery is never taken as confirmation.
+            - if:
+                condition:
+                  lambda: return !sticky::push_recent(millis());
+                then:
+                  - script.execute: poll_hob
+          else:
+            - lambda: |-
+                auto &s=sticky::ui;
+                if(s.notice.empty()) s.notice="Not sent: hob not ready";
+                s.clear_requests(); s.dirty=true;
+
+  - id: poll_hob
+    mode: single
+    then:
+      - http_request.get:
+          url: !lambda |-
+            return (sticky::connection.testing ? sticky::connection.candidate : sticky::connection.address)+"/text_sensor/Sticky%20snapshot";
+          request_headers:
+            Cache-Control: no-cache
+          capture_response: true
+          max_response_buffer_size: 4096
+          on_response:
+            - lambda: |-
+                ESP_LOGI("sticky_link","HTTP snapshot poll (push quiet, or connection test)");
+                bool valid=false;
+                sticky::ui.next_poll=millis()+30000; // Back off failed or incompatible responses.
+                if(response->status_code==200) {
+                  json::parse_json(body,[&](JsonObject wrapper)->bool {
+                    if(!wrapper["value"].is<const char*>() && !wrapper["state"].is<const char*>()) return false;
+                    std::string payload=wrapper["value"].is<const char*>() ? wrapper["value"].as<std::string>() : wrapper["state"].as<std::string>();
+                    return json::parse_json(payload,[&](JsonObject root)->bool {
+                      if((root["schema"]|0)!=1 || !root["tick"].is<uint32_t>() ||
+                         !root["mode"].is<const char*>() || !root["hob"].is<const char*>() ||
+                         !root["ready"].is<bool>() || !root["fault"].is<bool>()) return false;
+                      for(const char *key:{"levels","pan","hot"}) {
+                        if(!root[key].is<JsonArray>() || root[key].size()!=5) return false;
+                        for(int i=0;i<5;i++) if(!root[key][i].is<int>()) return false;
+                      }
+                      for(int i=0;i<5;i++) {
+                        if(root["levels"][i].as<int>() < -1 || root["levels"][i].as<int>()>10 ||
+                           root["pan"][i].as<int>() < -1 || root["pan"][i].as<int>()>1 ||
+                           root["hot"][i].as<int>() < -1 || root["hot"][i].as<int>()>1) return false;
+                      }
+                      if(sticky::connection.testing) {
+                        valid=true;
+                        bool saved=sticky::save_connection();
+                        sticky::connection.message=saved?"Connected and saved.":"Could not save. Previous hob retained.";
+                        sticky::ui.dirty=true;
+                        if(saved)sticky::ui.navigate(8,millis());
+                        return true;
+                      }
+                      auto &s=sticky::ui;
+                      s.next_poll=millis()+(s.controls?2000:10000);
+                      uint32_t tick=root["tick"];
+                      valid=true;
+                      // Repeated cached snapshots do not extend freshness. Reboots may reset tick.
+                      const bool live=!s.received || tick!=s.source_tick;
+                      s.source_tick=tick;
+                      int levels[5],pan[5],hot[5];
+                      for(int i=0;i<5;i++) {levels[i]=root["levels"][i];pan[i]=root["pan"][i];hot[i]=root["hot"][i];}
+                      sticky::apply_snapshot(s,root["mode"].as<std::string>(),root["hob"].as<std::string>(),
+                                             root["ready"],root["fault"],levels,pan,hot,live,millis());
+                      return true;
+                    });
+                  });
+                }
+                if(sticky::connection.testing) {
+                  sticky::connection.testing=false;
+                  if(!valid)sticky::connection.message=response->status_code==404?"404: install hob Sticky add-on; check address.":"Invalid snapshot; previous hob retained.";
+                  sticky::ui.dirty=true;return;
+                }
+                if(!valid) {
+                  sticky::ui.received=false; sticky::ui.clear_requests();
+                  std::string message=response->status_code==404?"404: hob Sticky add-on missing?":response->status_code==401||response->status_code==403?"Hob HTTP authentication required":"Hob snapshot invalid / unavailable";
+                  if(sticky::ui.notice!=message)sticky::ui.dirty=true;
+                  sticky::ui.notice=message;
+                }
+          on_error:
+            - lambda: |-
+                if(sticky::connection.testing) {
+                  sticky::connection.testing=false;
+                  sticky::connection.message="Hob unreachable. Previous hob retained.";
+                  sticky::ui.dirty=true;return;
+                }
+                sticky::ui.received=false; sticky::ui.clear_requests(); sticky::ui.dirty=true;
+                sticky::ui.next_poll=millis()+30000;
+                sticky::ui.notice="Hob disconnected";
+
+interval:
+  - interval: 100ms
+    then:
+      - if:
+          condition:
+            lambda: |-
+              // HTTP snapshot only when the UDP push is quiet (blocked network, other hob, first contact).
+              // Also in standby while watching, so the clock glance never goes silently stale.
+              return !sticky::connection.busy() && (sticky::ui.controls || sticky::ui.watching) && !sticky::push_recent(millis()) &&
+                int32_t(millis()-sticky::ui.next_poll)>=0 && id(wifi_link).is_connected() && !id(send_command).is_running();
+          then:
+            - script.execute: poll_hob
+  # Send pump: delivers the latest requested level; rapid key presses coalesce.
+  - interval: 100ms
+    then:
+      - if:
+          condition:
+            lambda: |-
+              auto &s=sticky::ui;
+              return s.controls && s.page==2 && s.draft>=0 && !id(send_command).is_running();
+          then:
+            - script.execute:
+                id: send_command
+                kind: level
+                zone: !lambda return sticky::ui.selected;
+                level: !lambda return sticky::ui.draft;
+  - interval: 100ms
+    then:
+      - lambda: |-
+          auto &s=sticky::ui;
+          if(s.controls && !sticky::connection.busy() && millis()-s.activity>${control_idle_seconds}UL*1000) id(go_clock).execute();
+          if(s.tick_timer(millis())) { id(timer_alarm).execute(); }
+          static uint32_t timer_minute=0;
+          uint32_t remaining_minute=(s.remaining(millis())+59)/60;
+          if(remaining_minute!=timer_minute) {timer_minute=remaining_minute; if(s.page==5 || !s.controls) s.dirty=true;}
+          static int64_t displayed_minute=-1;
+          auto tick=id(rtc).now();
+          if(!s.controls && tick.is_valid() && int64_t(tick.timestamp/(60*${clock_step_minutes}))!=displayed_minute) {
+            displayed_minute=tick.timestamp/(60*${clock_step_minutes}); s.dirty=true;
+          }
+          static uint32_t last_sync_attempt=0;
+          if(!s.controls && millis()>60000 && uint32_t(millis()-last_sync_attempt)>3600000 &&
+             (!tick.is_valid() || tick.timestamp-sticky::last_time_sync>86400) && !id(sync_clock).is_running()) {
+            last_sync_attempt=millis(); id(sync_clock).execute();
+          }
+          static bool previous_wifi=false;
+          static int previous_battery=-2;
+          bool wifi_connected=id(wifi_link).is_connected();
+          int battery_percent=isnan(id(battery).state)?-1:int(id(battery).state+0.5f);
+          if(wifi_connected!=previous_wifi || battery_percent!=previous_battery) {
+            s.dirty=true;if(wifi_connected!=previous_wifi && wifi_connected)s.next_poll=0;
+          }
+          previous_wifi=wifi_connected;previous_battery=battery_percent;
+          static bool was_fresh=false;
+          bool fresh=s.fresh(millis());
+          if(fresh!=was_fresh) { s.dirty=true; if(!fresh) s.clear_requests(); }
+          was_fresh=fresh;
+          s.settle_requests(millis());
+          // Standby glance: stop listening once the hob is seen off and cool; repaint on any change.
+          if(!s.controls && s.watching) {
+            if(fresh && !s.active()) {
+              s.watching=false; s.dirty=true;
+              if(!s.maintenance(millis()) && !id(sync_clock).is_running()) id(wifi_link).disable();
+            }
+          }
+          static std::string glance;
+          if(!s.controls) { auto g=sticky::glance_key(s,millis()); if(g!=glance) {glance=g; s.dirty=true;} }
+          static int painted_page=-1;
+          static std::string painted_hob_key;
+          if(s.dirty && id(screen).is_idle()) {
+            const auto key=sticky::hob_visual_key(s,millis(),wifi_connected,battery_percent);
+            s.dirty=false;
+            // Skip refreshes for invisible status changes.
+            if(s.page!=2 || painted_page!=2 || key!=painted_hob_key) {
+              // New page: full refresh clears ghosting. Same page: fast partial refresh.
+              if(s.page!=painted_page) id(screen).request_full_update();
+              painted_page=s.page;painted_hob_key=key;
+              s.painted_at=millis(); id(screen).update();
+            }
+          }
+      - if:
+          condition:
+            lambda: |-
+              return id(economy_sleep) && !sticky::ui.watching && !sticky::ui.timer_running && !id(timer_alarm).is_running() && millis()>4000 && !sticky::ui.controls && !sticky::ui.dirty &&
+                !sticky::ui.maintenance(millis()) && !id(sync_clock).is_running() &&
+                id(screen).is_idle() && !id(ok_button).state;
+          then:
+            - deep_sleep.enter:
+                id: sleep_ctrl
+                sleep_duration: !lambda |-
+                  auto t=id(rtc).now();
+                  const int step=${clock_step_minutes}*60;
+                  return t.is_valid() ? uint32_t(step-(t.timestamp%step))*1000 : 60000;
