@@ -11,6 +11,9 @@ RTC_DATA_ATTR WakeGuard wake_guard;
 // Last real wake (tap, grey key, power on) for HA; clock-tick timer wakes do not count.
 RTC_DATA_ATTR uint32_t last_wake=0;
 RTC_DATA_ATTR uint8_t last_wake_reason=0;
+// Sleep diagnostics since the last real wake: clock-tick wakes and total awake time (ms).
+// At a real wake they move to the last_* values, which are reported to HA on every boot.
+RTC_DATA_ATTR uint32_t tick_wakes=0, tick_awake_ms=0, last_tick_wakes=0, last_tick_awake_s=0;
 static bool charging=false;
 constexpr int TOUCH_INT_PIN=21, TOUCH_RESET_PIN=41, GREY_KEY_PIN=4;
 inline void output(int pin,int level) { gpio_set_direction(gpio_num_t(pin),GPIO_MODE_OUTPUT); gpio_set_level(gpio_num_t(pin),level); }

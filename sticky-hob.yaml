@@ -3,7 +3,7 @@ substitutions:
   hob_url: "http://induction.local" # Initial fallback only; Settings saves your selection.
   hob_name: "induction" # ESPHome name of the hob: its encrypted state push is accepted only from this device.
   control_idle_seconds: "120"
-  clock_step_minutes: "1" # 1 = live minute clock; 5/15 saves more battery, shows update time.
+  clock_step_minutes: "0" # 0 = no clock (no wakes in standby, longest battery); 1 = live minute clock; 5/15 in between.
   timezone: "Europe/Amsterdam"
   # Home Assistant entities for the appliance pages (called through the HA API).
   coffee_one_cup_script: "script.grind_coffee"
@@ -48,6 +48,16 @@ esphome:
             id(sensor_bus).write(0x6A,gyro,2);
             auto why=esp_sleep_get_wakeup_cause();
             // Remember real wakes for Home Assistant; minute clock ticks (timer) do not count.
+            if (why==ESP_SLEEP_WAKEUP_TIMER) {
+              sticky::tick_wakes++;
+            } else {
+              // Real wake: close the sleep period for the diagnostics.
+              sticky::last_tick_wakes=sticky::tick_wakes; sticky::last_tick_awake_s=sticky::tick_awake_ms/1000;
+              sticky::tick_wakes=0; sticky::tick_awake_ms=0;
+            }
+            id(sleep_ticks).publish_state(sticky::last_tick_wakes);
+            id(sleep_awake_time).publish_state(sticky::last_tick_awake_s);
+            ESP_LOGI("sticky_power","Last sleep: %u clock wakes, %u s awake in total",unsigned(sticky::last_tick_wakes),unsigned(sticky::last_tick_awake_s));
             if (why!=ESP_SLEEP_WAKEUP_TIMER) {
               auto now=id(rtc).now();
               sticky::last_wake=now.is_valid()?uint32_t(now.timestamp):0;
@@ -135,11 +145,11 @@ mdns:
 json:
 
 globals:
-  # 0 always awake, 1 deep sleep with tap or grey-key wake, 2 deep sleep with grey-key wake.
+  # 0 always awake, 1 deep sleep with tap or grey-key wake, 2 deep sleep with grey-key wake (default).
   - id: power_mode
     type: int
     restore_value: true
-    initial_value: '1'
+    initial_value: '2'
 
 output:
   - platform: ledc
@@ -246,6 +256,24 @@ sensor:
     accuracy_decimals: 0
     update_interval: never
 
+  # Sleep diagnostics for the last sleep period (reported after the next tap or key wake).
+  - platform: template
+    id: sleep_ticks
+    name: Clock wakes last sleep
+    entity_category: diagnostic
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: sleep_awake_time
+    name: Awake time last sleep
+    unit_of_measurement: s
+    device_class: duration
+    entity_category: diagnostic
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: never
+
 text_sensor:
   # Awake / In use / Showing hob / Update mode / Asleep / Standby. Published just before Wi-Fi
   # goes off; HA keeps the last value while the Sticky sleeps (deep-sleep device).
@@ -345,11 +373,17 @@ display:
       it.fill(COLOR_ON);
       sticky::draw_status(it,id(mdi_small),id(small),id(wifi_link).is_connected(),id(battery).state,millis());
       if(!s.controls) {
-        if(now.is_valid()) {
-          it.strftime(400,185,id(clock_font),COLOR_OFF,TextAlign::CENTER,"%H:%M",now);
-          it.strftime(400,290,id(medium),COLOR_OFF,TextAlign::CENTER,"%A  %d %B",now);
-        } else it.print(400,195,id(medium),COLOR_OFF,TextAlign::CENTER,"Clock needs network time");
-        if(!s.watching && id(power_mode)==sticky::POWER_SLEEP_BUTTON) it.print(400,375,id(medium),COLOR_OFF,TextAlign::CENTER,"Press the grey button");
+        if(${clock_step_minutes}==0) {
+          // No clock: a still standby screen; e-paper keeps it without power.
+          if(!s.watching) it.print(400,215,id(large),COLOR_OFF,TextAlign::CENTER,
+                                   id(power_mode)==sticky::POWER_SLEEP_BUTTON ? "Press the grey button" : "Tap to start");
+        } else {
+          if(now.is_valid()) {
+            it.strftime(400,185,id(clock_font),COLOR_OFF,TextAlign::CENTER,"%H:%M",now);
+            it.strftime(400,290,id(medium),COLOR_OFF,TextAlign::CENTER,"%A  %d %B",now);
+          } else it.print(400,195,id(medium),COLOR_OFF,TextAlign::CENTER,"Clock needs network time");
+          if(!s.watching && id(power_mode)==sticky::POWER_SLEEP_BUTTON) it.print(400,375,id(medium),COLOR_OFF,TextAlign::CENTER,"Press the grey button");
+        }
         sticky::draw_glance(it,id(small),id(medium),millis());
         if(${clock_step_minutes}>1 && !s.watching) it.printf(400,420,id(small),COLOR_OFF,TextAlign::CENTER,"Clock updates every %d minutes",${clock_step_minutes});
         if(s.timer_running) it.printf(400,340,id(small),COLOR_OFF,TextAlign::CENTER,"Timer: %u min",unsigned((s.remaining(millis())+59)/60));
@@ -802,8 +836,9 @@ interval:
           if(remaining_minute!=timer_minute) {timer_minute=remaining_minute; if(s.page==5 || !s.controls) s.dirty=true;}
           static int64_t displayed_minute=-1;
           auto tick=id(rtc).now();
-          if(!s.controls && tick.is_valid() && int64_t(tick.timestamp/(60*${clock_step_minutes}))!=displayed_minute) {
-            displayed_minute=tick.timestamp/(60*${clock_step_minutes}); s.dirty=true;
+          constexpr int clock_step_s=60*${clock_step_minutes};
+          if(clock_step_s>0 && !s.controls && tick.is_valid() && int64_t(tick.timestamp/(clock_step_s>0?clock_step_s:1))!=displayed_minute) {
+            displayed_minute=tick.timestamp/(clock_step_s>0?clock_step_s:1); s.dirty=true;
           }
           static uint32_t last_sync_attempt=0;
           if(!s.controls && millis()>60000 && uint32_t(millis()-last_sync_attempt)>3600000 &&
@@ -864,9 +899,14 @@ interval:
                 id(sleep_ctrl)->set_ext1_wakeup({sticky::wake_mask(id(power_mode)), ESP_EXT1_WAKEUP_ANY_LOW});
                 auto t=id(rtc).now();
                 sticky::slept_at=t.is_valid()?uint32_t(t.timestamp):0;
+                if(esp_sleep_get_wakeup_cause()==ESP_SLEEP_WAKEUP_TIMER) sticky::tick_awake_ms+=millis();
+                ESP_LOGI("sticky_power","Deep sleep after %u ms awake",unsigned(millis()));
             - deep_sleep.enter:
                 id: sleep_ctrl
                 sleep_duration: !lambda |-
-                  auto t=id(rtc).now();
+                  // No clock: only a tap or the grey key wakes it (plus one quiet wake a day).
                   const int step=${clock_step_minutes}*60;
-                  return t.is_valid() ? uint32_t(step-(t.timestamp%step))*1000 : 60000;
+                  if(step<=0) return uint32_t(86400000);
+                  auto t=id(rtc).now();
+                  const int safe_step=step>0?step:1;  // keeps the compiler quiet when the clock is off
+                  return t.is_valid() ? uint32_t(safe_step-(t.timestamp%safe_step))*1000 : 60000;
