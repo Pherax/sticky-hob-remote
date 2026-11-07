@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.15.1 (7 November 2026) — sleep diagnostics
+
+* **Default standby is now *Battery saver: button wake only*.** The touch controller is off in sleep; tap wake
+  stays available in Settings. Devices that already stored a mode keep it until you change it in Settings.
+* **No clock by default** (`clock_step_minutes: "0"`): standby shows *Tap to start* (or *Press the grey button*)
+  and the Sticky no longer wakes every minute; only a tap, the grey key or one quiet daily wake (clock sync).
+  Set `clock_step_minutes` to 1, 5 or 15 to get the clock back.
+
+For tracking down overnight battery drain. Reported after each tap or key wake, for the sleep period before it:
+
+* **Clock wakes last sleep**: how many times the minute clock woke the Sticky. About one per minute asleep means
+  deep sleep works; 0 means it never went to sleep.
+* **Awake time last sleep** (s): total time awake during those clock wakes. A few seconds per wake is normal.
+* The log shows `Deep sleep after N ms awake` and `Last sleep: N clock wakes, N s awake in total`.
+
+Correction to v0.15: Home Assistant does show the Sticky's entities as *unavailable* while it sleeps.
+*Asleep* followed by *unavailable* means it went to sleep.
+
+## v0.15 (6 November 2026) — sleep status in Home Assistant
+
+New entities:
+
+* **Status**: `In use`, `Showing hob`, `Update mode`, `Awake`, `Charging`, and, just before Wi-Fi goes off,
+  `Asleep` (battery-saver modes), `Standby` (always awake, Wi-Fi off) or `Standby, charging`.
+* **Last wake** (diagnostic, timestamp): last tap, grey-key or power-on wake. Minute clock ticks do not count.
+* **Wake reason** (diagnostic): `Screen tap`, `Grey key` or `Power on / reset`.
+
+The Sticky has a `deep_sleep:` component, so Home Assistant keeps these (and the battery sensors) at their last
+value while it sleeps instead of showing *unavailable*. The status is sent about 1 s before Wi-Fi switches off.
+Last wake and wake reason are kept in RTC memory and re-sent on every connection.
+
 ## v0.14.1 (6 November 2026) — glance shortcut
 
 * Tap the hob glance on the standby screen to open the cooktop page directly. A tap anywhere else still opens
