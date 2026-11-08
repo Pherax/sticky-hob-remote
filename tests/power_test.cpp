@@ -5,9 +5,16 @@
 int main(){
  using namespace sticky;
  // Settings row cycles through all three modes.
- assert(next_power_mode(POWER_SLEEP_TAP)==POWER_SLEEP_BUTTON);
- assert(next_power_mode(POWER_SLEEP_BUTTON)==POWER_AWAKE);
- assert(next_power_mode(POWER_AWAKE)==POWER_SLEEP_TAP);
+ assert(next_power_mode(POWER_STANDBY_SLEEP)==POWER_SLEEP_BUTTON);
+ assert(next_power_mode(POWER_SLEEP_BUTTON)==POWER_SLEEP_TAP);
+ assert(next_power_mode(POWER_SLEEP_TAP)==POWER_AWAKE);
+ assert(next_power_mode(POWER_AWAKE)==POWER_STANDBY_SLEEP);
+ assert(deep_sleep_mode(POWER_STANDBY_SLEEP) && !touch_wake(POWER_STANDBY_SLEEP) && touch_wake(POWER_SLEEP_TAP));
+ assert(in_standby(POWER_STANDBY_SLEEP,299999,300000) && !in_standby(POWER_STANDBY_SLEEP,300000,300000) && !in_standby(POWER_SLEEP_BUTTON,0,300000));
+ assert(std::strlen(power_label(POWER_STANDBY_SLEEP))<40);
+ standby_since=1000; assert(!button_wake_text(POWER_STANDBY_SLEEP,1000+299999,300000) && button_wake_text(POWER_STANDBY_SLEEP,1000+300000,300000));
+ assert(button_wake_text(POWER_SLEEP_BUTTON,0,300000) && !button_wake_text(POWER_SLEEP_TAP,0,300000));
+ assert(!std::strcmp(device_status(false,false,false,false,true,POWER_STANDBY_SLEEP),"Standby"));
  assert(deep_sleep_mode(POWER_SLEEP_TAP) && deep_sleep_mode(POWER_SLEEP_BUTTON) && !deep_sleep_mode(POWER_AWAKE));
  assert(std::strlen(power_label(POWER_SLEEP_TAP))<40);
  // Charging only on a clearly positive current; NaN and discharge are not charging.

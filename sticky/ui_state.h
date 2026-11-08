@@ -116,4 +116,8 @@ inline std::string glance_key(const State &s,uint32_t now) {
  return key;
 }
 inline std::string level_label(int level) { return level<0?"?":level==10?"P":std::to_string(level); }
+// A tap that came in while the e-paper was refreshing; handled when it is done.
+struct PendingTap { int x=0, y=0; uint32_t at=0; };
+inline PendingTap pending_tap{};
+inline uint32_t last_tap=0;
 }

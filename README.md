@@ -37,7 +37,9 @@ standby clock with live hob status.*
   refresh only on page changes and every 30 updates.
 * **Push link:** the hob sends its state over encrypted UDP about once a second
   and on every change. HTTP polling is only a fallback.
-* **Battery saver:** deep sleep in standby, woken by the grey key (default) or
+* **Tap for 5 min, then button wake (default):** after use the Sticky stays awake for a few minutes so a tap
+  opens it instantly, then deep-sleeps until the grey key is pressed.
+* **Battery saver:** deep sleep in standby, woken by the grey key or
   optionally also by a tap on the screen; stays awake while charging. A *Battery current* sensor shows what
   it draws. The always-awake mode lasts about a day on the 750 mAh battery.
 * **Home Assistant status:** *Status* (In use / Showing hob / Asleep / …), *Last wake*

@@ -5,15 +5,31 @@ namespace sticky {
 //   AWAKE         CPU and touch stay on: tap the clock to open. About a day per charge.
 //   SLEEP_TAP     deep sleep; a tap on the screen or the grey key wakes it.
 //   SLEEP_BUTTON  deep sleep; only the grey key wakes it. Lowest consumption.
-enum PowerMode : int { POWER_AWAKE = 0, POWER_SLEEP_TAP = 1, POWER_SLEEP_BUTTON = 2 };
+//   STANDBY_SLEEP awake for a few minutes after use (a tap opens it instantly), then deep
+//                 sleep with grey-key wake. Default.
+enum PowerMode : int { POWER_AWAKE = 0, POWER_SLEEP_TAP = 1, POWER_SLEEP_BUTTON = 2, POWER_STANDBY_SLEEP = 3 };
 
-inline int next_power_mode(int m) { return m == POWER_SLEEP_TAP ? POWER_SLEEP_BUTTON : m == POWER_SLEEP_BUTTON ? POWER_AWAKE : POWER_SLEEP_TAP; }
+inline int next_power_mode(int m) {
+  return m == POWER_STANDBY_SLEEP ? POWER_SLEEP_BUTTON : m == POWER_SLEEP_BUTTON ? POWER_SLEEP_TAP
+       : m == POWER_SLEEP_TAP ? POWER_AWAKE : POWER_STANDBY_SLEEP;
+}
 inline const char *power_label(int m) {
-  return m == POWER_SLEEP_TAP ? "Battery saver: tap or button wake"
+  return m == POWER_STANDBY_SLEEP ? "Tap for 5 min, then button wake"
+       : m == POWER_SLEEP_TAP ? "Battery saver: tap or button wake"
        : m == POWER_SLEEP_BUTTON ? "Battery saver: button wake only"
        : "Always awake (about 1 day)";
 }
-inline bool deep_sleep_mode(int m) { return m == POWER_SLEEP_TAP || m == POWER_SLEEP_BUTTON; }
+inline bool deep_sleep_mode(int m) { return m == POWER_SLEEP_TAP || m == POWER_SLEEP_BUTTON || m == POWER_STANDBY_SLEEP; }
+// Standby phase of STANDBY_SLEEP: awake with touch on until standby_ms reaches the limit.
+inline bool in_standby(int m, uint32_t standby_ms, uint32_t limit_ms) { return m == POWER_STANDBY_SLEEP && standby_ms < limit_ms; }
+// millis() when the Sticky last entered standby (controls closed or hob summary gone).
+inline uint32_t standby_since = 0;
+// Standby screen asks for the grey key once a tap can no longer wake it.
+inline bool button_wake_text(int m, uint32_t now, uint32_t limit_ms) {
+  return m == POWER_SLEEP_BUTTON || (m == POWER_STANDBY_SLEEP && !in_standby(m, now - standby_since, limit_ms));
+}
+// What wakes it from deep sleep: only SLEEP_TAP keeps the touch controller powered.
+inline bool touch_wake(int m) { return m == POWER_SLEEP_TAP; }
 
 // Charging: the fuel gauge reports a positive average current while charging.
 inline bool is_charging(float average_ma) { return average_ma == average_ma && average_ma > 5.0f; }
@@ -30,7 +46,7 @@ inline const char *device_status(bool controls, bool maintenance, bool watching,
   if (maintenance) return "Update mode";
   if (controls) return "In use";
   if (watching) return "Showing hob";
-  if (wifi_off) return charging ? "Standby, charging" : deep_sleep_mode(mode) ? "Asleep" : "Standby";
+  if (wifi_off) return charging ? "Standby, charging" : deep_sleep_mode(mode) && mode != POWER_STANDBY_SLEEP ? "Asleep" : "Standby";
   return charging ? "Charging" : "Awake";
 }
 

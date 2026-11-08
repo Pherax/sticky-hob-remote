@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.17 (8 November 2026) — standby, then sleep
+
+* New default standby mode **"Tap for 5 min, then button wake"**. After you close the controls (or the hob
+  summary disappears) the Sticky stays awake with Wi-Fi off for `standby_minutes` (default 5): a tap opens it
+  instantly. After that it redraws *Press the grey button* and goes into deep sleep with grey-key wake only.
+* Clock-tick and daily wakes skip the standby phase.
+* Settings cycles: tap 5 min then button → button only → tap or button → always awake.
+  Devices that already stored a mode keep it; pick the new one once in Settings.
+
+## v0.16 (7 November 2026) — faster taps
+
+* **Page changes use the fast partial refresh** instead of a full refresh, so a new page is ready to tap after
+  about half a second instead of several seconds. A full refresh (clears ghosting) now happens when the Sticky
+  returns to standby, and still every 30 updates.
+* **Taps during a refresh are kept** and handled as soon as the screen is ready, instead of being ignored.
+  Only the last tap is kept, for at most 1.5 s; taps within 350 ms of the previous one (accidental double taps)
+  and taps in standby are not kept.
+* The tap logic moved into a `handle_tap` script; behaviour is otherwise unchanged.
+
 ## v0.15.1 (7 November 2026) — sleep diagnostics
 
 * **Default standby is now *Battery saver: button wake only*.** The touch controller is off in sleep; tap wake

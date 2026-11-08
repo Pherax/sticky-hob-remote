@@ -3,6 +3,7 @@ substitutions:
   hob_url: "http://induction.local" # Initial fallback only; Settings saves your selection.
   hob_name: "induction" # ESPHome name of the hob: its encrypted state push is accepted only from this device.
   control_idle_seconds: "120"
+  standby_minutes: "5"    # "Tap for 5 min, then button wake": how long a tap still wakes it instantly
   clock_step_minutes: "0" # 0 = no clock (no wakes in standby, longest battery); 1 = live minute clock; 5/15 in between.
   timezone: "Europe/Amsterdam"
   # Home Assistant entities for the appliance pages (called through the HA API).
@@ -49,6 +50,8 @@ esphome:
             auto why=esp_sleep_get_wakeup_cause();
             // Remember real wakes for Home Assistant; minute clock ticks (timer) do not count.
             if (why==ESP_SLEEP_WAKEUP_TIMER) {
+              // Clock-tick wake: no standby phase, straight back to sleep when idle.
+              sticky::standby_since=0u-${standby_minutes}u*60000u;
               sticky::tick_wakes++;
             } else {
               // Real wake: close the sleep period for the diagnostics.
@@ -88,7 +91,7 @@ esphome:
   on_shutdown:
     priority: -100
     then:
-      - lambda: sticky::hardware_sleep(id(power_mode)==sticky::POWER_SLEEP_TAP);
+      - lambda: sticky::hardware_sleep(sticky::touch_wake(id(power_mode)));
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -145,11 +148,12 @@ mdns:
 json:
 
 globals:
-  # 0 always awake, 1 deep sleep with tap or grey-key wake, 2 deep sleep with grey-key wake (default).
+  # 0 always awake, 1 deep sleep with tap or grey-key wake, 2 deep sleep with grey-key wake,
+  # 3 (default) awake ${standby_minutes} min after use with tap wake, then deep sleep with grey-key wake.
   - id: power_mode
     type: int
     restore_value: true
-    initial_value: '2'
+    initial_value: '3'
 
 output:
   - platform: ledc
@@ -376,13 +380,13 @@ display:
         if(${clock_step_minutes}==0) {
           // No clock: a still standby screen; e-paper keeps it without power.
           if(!s.watching) it.print(400,215,id(large),COLOR_OFF,TextAlign::CENTER,
-                                   id(power_mode)==sticky::POWER_SLEEP_BUTTON ? "Press the grey button" : "Tap to start");
+                                   sticky::button_wake_text(id(power_mode),millis(),${standby_minutes}UL*60000UL) ? "Press the grey button" : "Tap to start");
         } else {
           if(now.is_valid()) {
             it.strftime(400,185,id(clock_font),COLOR_OFF,TextAlign::CENTER,"%H:%M",now);
             it.strftime(400,290,id(medium),COLOR_OFF,TextAlign::CENTER,"%A  %d %B",now);
           } else it.print(400,195,id(medium),COLOR_OFF,TextAlign::CENTER,"Clock needs network time");
-          if(!s.watching && id(power_mode)==sticky::POWER_SLEEP_BUTTON) it.print(400,375,id(medium),COLOR_OFF,TextAlign::CENTER,"Press the grey button");
+          if(!s.watching && sticky::button_wake_text(id(power_mode),millis(),${standby_minutes}UL*60000UL)) it.print(400,375,id(medium),COLOR_OFF,TextAlign::CENTER,"Press the grey button");
         }
         sticky::draw_glance(it,id(small),id(medium),millis());
         if(${clock_step_minutes}>1 && !s.watching) it.printf(400,420,id(small),COLOR_OFF,TextAlign::CENTER,"Clock updates every %d minutes",${clock_step_minutes});
@@ -410,18 +414,100 @@ touchscreen:
       swap_xy: true
     on_touch:
       - lambda: |-
-          // Ignore touches while pixels are changing; first wake touch never sends.
-          if(sticky::ui.dirty || !id(screen).is_idle()) return;
+          auto &s=sticky::ui;
+          // While the screen is still refreshing, keep the tap and handle it as soon as the
+          // refresh is done, instead of dropping it. Standby taps (incl. the wake tap) are never kept.
+          if(s.dirty || !id(screen).is_idle()) {
+            if(s.controls && millis()>3000 && millis()-sticky::last_tap>350) {
+              sticky::pending_tap={touch.x,touch.y,millis()};
+            }
+            return;
+          }
+          sticky::last_tap=millis();
+          id(handle_tap).execute(touch.x,touch.y);
+
+binary_sensor:
+  - platform: gpio
+    id: ok_button
+    internal: true
+    pin:
+      number: GPIO4
+      inverted: true
+      mode: INPUT_PULLUP
+      allow_other_uses: true
+    filters:
+      - delayed_on_off: 30ms
+    # The grey key: wakes the Sticky, otherwise goes back one page.
+    on_click:
+      min_length: 40ms
+      max_length: 800ms
+      then:
+        - script.execute: go_back
+  - platform: gpio
+    id: up_button
+    internal: true
+    pin: {number: GPIO5, inverted: true, mode: INPUT_PULLUP}
+    filters:
+      - delayed_on_off: 30ms
+    on_multi_click:
+      # Short press on the cooktop page: selected zone one level up.
+      - timing:
+          - ON for at most 1s
+          - OFF for at least 20ms
+        then:
+          - lambda: |-
+              auto &s=sticky::ui;
+              if(s.controls && s.page==2) {s.activity=millis(); s.step_level(+1,millis());}
+      # Hold 3 s: update mode (Wi-Fi on for OTA).
+      - timing:
+          - ON for at least 3s
+        then:
+          - lambda: |-
+              sticky::ui.maintenance_until=millis()+600000;
+              sticky::ui.dirty=true;
+          - wifi.enable:
+  - platform: gpio
+    id: down_button
+    internal: true
+    pin: {number: GPIO6, inverted: true, mode: INPUT_PULLUP}
+    filters:
+      - delayed_on_off: 30ms
+    # Selected zone one level down.
+    on_click:
+      min_length: 30ms
+      max_length: 1s
+      then:
+        - lambda: |-
+            auto &s=sticky::ui;
+            if(s.controls && s.page==2) {s.activity=millis(); s.step_level(-1,millis());}
+
+deep_sleep:
+  id: sleep_ctrl
+  esp32_ext1_wakeup:
+    pins:
+      - number: GPIO4
+        mode: INPUT_PULLUP
+        allow_other_uses: true
+    mode: ANY_LOW
+
+script:
+  # Everything a tap does; called from on_touch or for a tap kept during a refresh.
+  - id: handle_tap
+    mode: single
+    parameters:
+      x: int
+      y: int
+    then:
+      - lambda: |-
           auto &s=sticky::ui;
           if(!s.controls) {
             // A tap on the standby hob glance goes straight to the cooktop page.
-            const bool to_hob=s.watching && sticky::glance_area.contains(touch.x,touch.y);
+            const bool to_hob=s.watching && sticky::glance_area.contains(x,y);
             id(open_controls).execute();
             if(to_hob && s.controls) s.navigate(2,millis());
             return;
           }
           s.activity=millis();
-          const int x=touch.x,y=touch.y;
           if(s.page!=2) {
             if(sticky::connection.busy()) return;
             if(sticky::back_button.contains(x,y)) { s.navigate(s.page==9?8:s.page==8?7:s.page==1?0:1,millis()); if(!s.controls) id(go_clock).execute(); return; }
@@ -489,72 +575,6 @@ touchscreen:
           int n=sticky::level_at(x,y);
           if(n>=0) {s.request_level(n,millis());return;}
           int z=sticky::zone_at(x,y); if(z>=0) s.select(z);
-
-binary_sensor:
-  - platform: gpio
-    id: ok_button
-    internal: true
-    pin:
-      number: GPIO4
-      inverted: true
-      mode: INPUT_PULLUP
-      allow_other_uses: true
-    filters:
-      - delayed_on_off: 30ms
-    # The grey key: wakes the Sticky, otherwise goes back one page.
-    on_click:
-      min_length: 40ms
-      max_length: 800ms
-      then:
-        - script.execute: go_back
-  - platform: gpio
-    id: up_button
-    internal: true
-    pin: {number: GPIO5, inverted: true, mode: INPUT_PULLUP}
-    filters:
-      - delayed_on_off: 30ms
-    on_multi_click:
-      # Short press on the cooktop page: selected zone one level up.
-      - timing:
-          - ON for at most 1s
-          - OFF for at least 20ms
-        then:
-          - lambda: |-
-              auto &s=sticky::ui;
-              if(s.controls && s.page==2) {s.activity=millis(); s.step_level(+1,millis());}
-      # Hold 3 s: update mode (Wi-Fi on for OTA).
-      - timing:
-          - ON for at least 3s
-        then:
-          - lambda: |-
-              sticky::ui.maintenance_until=millis()+600000;
-              sticky::ui.dirty=true;
-          - wifi.enable:
-  - platform: gpio
-    id: down_button
-    internal: true
-    pin: {number: GPIO6, inverted: true, mode: INPUT_PULLUP}
-    filters:
-      - delayed_on_off: 30ms
-    # Selected zone one level down.
-    on_click:
-      min_length: 30ms
-      max_length: 1s
-      then:
-        - lambda: |-
-            auto &s=sticky::ui;
-            if(s.controls && s.page==2) {s.activity=millis(); s.step_level(-1,millis());}
-
-deep_sleep:
-  id: sleep_ctrl
-  esp32_ext1_wakeup:
-    pins:
-      - number: GPIO4
-        mode: INPUT_PULLUP
-        allow_other_uses: true
-    mode: ANY_LOW
-
-script:
   - id: ha_action
     mode: single
     parameters:
@@ -671,6 +691,7 @@ script:
           s.clock();
           // Keep listening in standby while the hob was last seen on or hot.
           s.watching=s.fresh(millis()) && s.active();
+          sticky::standby_since=millis();
       - if:
           condition:
             lambda: return !sticky::ui.maintenance(millis()) && !sticky::ui.watching;
@@ -861,7 +882,7 @@ interval:
           // Standby glance: stop listening once the hob is seen off and cool; repaint on any change.
           if(!s.controls && s.watching) {
             if(fresh && !s.active()) {
-              s.watching=false; s.dirty=true;
+              s.watching=false; s.dirty=true; sticky::standby_since=millis();
               if(!s.maintenance(millis()) && !id(sync_clock).is_running()) id(wifi_off).execute();
             }
           }
@@ -873,7 +894,11 @@ interval:
             if(now_status!=ha_status) { ha_status=now_status; id(sticky_status).publish_state(ha_status); }
           }
           static std::string glance;
-          if(!s.controls) { auto g=sticky::glance_key(s,millis()); if(g!=glance) {glance=g; s.dirty=true;} }
+          if(!s.controls) {
+            // Repaint when the hob summary changes, or when the tap standby ends ("Press the grey button").
+            auto g=sticky::glance_key(s,millis())+(sticky::button_wake_text(id(power_mode),millis(),${standby_minutes}UL*60000UL)?"|key":"");
+            if(g!=glance) {glance=g; s.dirty=true;}
+          }
           static int painted_page=-1;
           static std::string painted_hob_key;
           if(s.dirty && id(screen).is_idle()) {
@@ -881,17 +906,24 @@ interval:
             s.dirty=false;
             // Skip refreshes for invisible status changes.
             if(s.page!=2 || painted_page!=2 || key!=painted_hob_key) {
-              // New page: full refresh clears ghosting. Same page: fast partial refresh.
-              if(s.page!=painted_page) id(screen).request_full_update();
+              // Fast partial refresh, also for page changes. A full refresh (clears ghosting) when
+              // going back to standby, when nobody is waiting for the screen, and every 30 updates.
+              if(s.page==0 && painted_page!=0) id(screen).request_full_update();
               painted_page=s.page;painted_hob_key=key;
               s.painted_at=millis(); id(screen).update();
             }
+          }
+          // A tap that arrived during the last refresh: handle it now (if still recent).
+          if(sticky::pending_tap.at && !s.dirty && id(screen).is_idle()) {
+            const auto t=sticky::pending_tap; sticky::pending_tap.at=0;
+            if(s.controls && millis()-t.at<1500) { sticky::last_tap=millis(); id(handle_tap).execute(t.x,t.y); }
           }
       - if:
           condition:
             lambda: |-
               // Deep sleep on battery only; while charging the Sticky simply stays awake.
-              return sticky::deep_sleep_mode(id(power_mode)) && !sticky::charging && !sticky::ui.watching && !sticky::ui.timer_running && !id(timer_alarm).is_running() && millis()>4000 && !sticky::ui.controls && !sticky::ui.dirty &&
+              return sticky::deep_sleep_mode(id(power_mode)) && !sticky::in_standby(id(power_mode),millis()-sticky::standby_since,${standby_minutes}UL*60000UL) &&
+                !sticky::charging && !sticky::ui.watching && !sticky::ui.timer_running && !id(timer_alarm).is_running() && millis()>4000 && !sticky::ui.controls && !sticky::ui.dirty &&
                 !sticky::ui.maintenance(millis()) && !id(sync_clock).is_running() && !id(wifi_off).is_running() &&
                 id(screen).is_idle() && !id(ok_button).state;
           then:
