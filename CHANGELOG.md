@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.17.1 (12 November 2026)
+
+* The clock is back by default, redrawn every 5 minutes (`clock_step_minutes: "5"`). In deep sleep that is
+  288 short wakes a day of about 4 s each. The *Clock wakes last sleep* and *Awake time last sleep* sensors
+  show what it costs. Set `"0"` for no clock again.
+* The *Clock updates every N minutes* line is gone from the standby screen.
+
 ## v0.17 (8 November 2026) — standby, then sleep
 
 * New default standby mode **"Tap for 5 min, then button wake"**. After you close the controls (or the hob

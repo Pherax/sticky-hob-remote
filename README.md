@@ -87,7 +87,7 @@ At the top of `sticky-hob.yaml`:
 |---|---|
 | `hob_name` | ESPHome name of the hob; push data is accepted only from this device |
 | `hob_url` | Initial fallback address; Settings → Hob connection saves your choice |
-| `timezone`, `clock_step_minutes`, `control_idle_seconds` | Clock and standby behaviour. `clock_step_minutes: 0` (default) shows no clock: the Sticky only wakes when you press the grey key (or tap, if tap wake is on), which gives the longest battery life. With `1`, `5` or `15` it shows a clock and wakes every step to redraw it. |
+| `timezone`, `clock_step_minutes`, `control_idle_seconds` | Clock and standby behaviour. `clock_step_minutes: 5` (default) shows a clock that is redrawn every 5 minutes; in deep sleep the Sticky wakes for a few seconds per step. `0` shows no clock and gives the longest battery life; `1` is a live minute clock. |
 | `coffee_*`, `light_*`, `hood_*` | Home Assistant entities for the appliance pages |
 
 For the appliance pages, add the Sticky in Home Assistant (Settings → Devices

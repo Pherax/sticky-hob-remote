@@ -4,7 +4,7 @@ substitutions:
   hob_name: "induction" # ESPHome name of the hob: its encrypted state push is accepted only from this device.
   control_idle_seconds: "120"
   standby_minutes: "5"    # "Tap for 5 min, then button wake": how long a tap still wakes it instantly
-  clock_step_minutes: "0" # 0 = no clock (no wakes in standby, longest battery); 1 = live minute clock; 5/15 in between.
+  clock_step_minutes: "5" # 5 = clock redrawn every 5 min (default); 0 = no clock, longest battery; 1 = live minute clock.
   timezone: "Europe/Amsterdam"
   # Home Assistant entities for the appliance pages (called through the HA API).
   coffee_one_cup_script: "script.grind_coffee"
@@ -389,7 +389,6 @@ display:
           if(!s.watching && sticky::button_wake_text(id(power_mode),millis(),${standby_minutes}UL*60000UL)) it.print(400,375,id(medium),COLOR_OFF,TextAlign::CENTER,"Press the grey button");
         }
         sticky::draw_glance(it,id(small),id(medium),millis());
-        if(${clock_step_minutes}>1 && !s.watching) it.printf(400,420,id(small),COLOR_OFF,TextAlign::CENTER,"Clock updates every %d minutes",${clock_step_minutes});
         if(s.timer_running) it.printf(400,340,id(small),COLOR_OFF,TextAlign::CENTER,"Timer: %u min",unsigned((s.remaining(millis())+59)/60));
         if(s.maintenance(millis())) it.print(20,20,id(small),COLOR_OFF,"UPDATE MODE: Wi-Fi on");
 
