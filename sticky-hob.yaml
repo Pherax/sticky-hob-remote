@@ -339,7 +339,8 @@ font:
   - file: sticky/fonts/materialdesignicons-webfont.ttf
     id: mdi_menu
     size: 96
-    glyphs: ["\U000F04DE", "\U000F0210", "\U000F06CA", "\U000F051B", "\U000F0336", "\U000F08BB"]
+    glyphs: ["\U000F04DE", "\U000F0210", "\U000F06CA", "\U000F051B", "\U000F0336", "\U000F08BB",
+             "\U000F1A3A", "\U000F081D", "\U000F146F", "\U000F1470"]
   - file: sticky/fonts/materialdesignicons-webfont.ttf
     id: mdi_small
     size: 32

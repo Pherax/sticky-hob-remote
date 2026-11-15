@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <cassert>
+#include <string>
 #include "../sticky/menu.h"
 struct Display {
  void line(int x,int y,int xx,int yy,int){::printf("<path d='M%d %dL%d %d' stroke='black'/>\n",x,y,xx,yy);}
@@ -22,6 +23,14 @@ int main() {
      assert(sticky::appliance_at(page,r.x+r.w,r.y)==-1);
    }
  }
+ // Hood icons match their function; coffee and lights keep their page icon.
+ assert(std::string(sticky::appliance_glyph(3,0))=="\U000F0336"); // Light: lightbulb-outline
+ assert(std::string(sticky::appliance_glyph(3,1))=="\U000F1A3A"); // Timer: fan-clock
+ assert(std::string(sticky::appliance_glyph(3,2))=="\U000F081D"); // Off: fan-off
+ assert(std::string(sticky::appliance_glyph(3,3))=="\U000F146F"); // +: fan-plus
+ assert(std::string(sticky::appliance_glyph(3,4))=="\U000F1470"); // -: fan-minus
+ assert(std::string(sticky::appliance_glyph(4,1))=="\U000F06CA");
+ assert(std::string(sticky::appliance_glyph(6,2))=="\U000F0336");
  Display d; sticky::ui.open(100);
  puts("<svg xmlns='http://www.w3.org/2000/svg' width='800' height='480' viewBox='0 0 800 480'><rect width='800' height='480' fill='white'/>");
  sticky::draw_page(d,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,100,1,80);
