@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.17.2 (15 November 2026) — hood icons
 
 * Extraction hood page: each button now has an icon for its function instead of the same fan everywhere:
   Light (lightbulb), Timer (fan with clock), Off (fan crossed out), + (fan plus) and - (fan minus).
