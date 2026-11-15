@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+* Extraction hood page: each button now has an icon for its function instead of the same fan everywhere:
+  Light (lightbulb), Timer (fan with clock), Off (fan crossed out), + (fan plus) and - (fan minus).
+  The extra MDI glyphs are added to the `mdi_menu` font in `sticky-hob.yaml`.
+
 ## v0.17.1 (12 November 2026)
 
 * The clock is back by default, redrawn every 5 minutes (`clock_step_minutes: "5"`). In deep sleep that is

@@ -7,6 +7,10 @@
 namespace sticky {
 // MDI 7.4.47: stove, fan, coffee-outline, timer-outline, lightbulb-outline, cog-outline.
 static const char *menu_glyphs[]={"\U000F04DE","\U000F0210","\U000F06CA","\U000F051B","\U000F0336","\U000F08BB"};
+// Hood page, one icon per function: lightbulb-outline, fan-clock, fan-off, fan-plus, fan-minus.
+static const char *hood_glyphs[]={"\U000F0336","\U000F1A3A","\U000F081D","\U000F146F","\U000F1470"};
+// Glyph for appliance button i on page 3 (hood), 4 (coffee) or 6 (lights).
+inline const char *appliance_glyph(int page,int i){return page==3?hood_glyphs[i]:page==4?menu_glyphs[2]:menu_glyphs[4];}
 template<class D> void outline(D &d,Rect r){d.rectangle(r.x,r.y,r.w,r.h,esphome::display::COLOR_OFF);}
 template<class D> void icon(D &d,esphome::display::BaseFont *font,int type,int x,int y) {
  if(type==0) {
@@ -78,7 +82,7 @@ template<class D> void draw_page(D &d, esphome::display::BaseFont *small, esphom
    const char *lights[]={"Kitchen top","Kitchen bottom","Hood"};
    for(int i=0;i<appliance_count(s.page);i++) {
      auto r=appliance_button(s.page,i);
-     icon(d,mdi,s.page==4?2:s.page==6?4:1,r.mx(),r.my()-30);
+     d.print(r.mx(),r.my()-30,mdi,esphome::display::COLOR_OFF,esphome::display::TextAlign::CENTER,appliance_glyph(s.page,i));
      d.print(r.mx(),r.my()+48,medium,esphome::display::COLOR_OFF,esphome::display::TextAlign::CENTER,s.page==3?hood[i]:s.page==4?coffee[i]:lights[i]);
    }
  }
